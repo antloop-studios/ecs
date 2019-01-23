@@ -37,12 +37,23 @@ end
 
 -- multiple subsystems can be added to a system
 s.mysys.debug = function(onec, twoc)
+   -- plain forloop can be used in place of zipper
+   -- there might also be a slight performance benefit
+   
    print('this is a debug subsystem')
+   
+   for i = 1, #onec do
+      -- check if entity is live
+      if e[i] then
+         print('onec:', onec[i][0], onec[i][1])
+         print('twoc:', 'x:'..twoc[i].x, 'y:'..twoc[i].y)
+      end
+   end
 end
 ```
 
 ## update all or specific systems
-```
+```lua
 s() -- update all
 s(s.mysys, ...) -- update specific
 ```
