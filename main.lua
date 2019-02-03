@@ -1,34 +1,32 @@
 -- SETUP --------------------------------------------------------------------------------
 
-require "zip"
 local e, c, s = unpack(require "ecs")
 
 c.position = {x = 0, y = 0}
 c.velocity = {x = 0, y = 0}
+c.other = {testing = 10}
 
-e.movable = {c.position, c.velocity}
+e.movable = {"position", "velocity"}
+e.other = {"other"}
 
-s.physics = {c.position, c.velocity}
-s.physics.update = function(position, velocity)
-   local i = 0
+s.physics = {"position", "velocity"}
+s.physics.update = function(i, position, velocity)
+   position.x = position.x + velocity.x
+   position.y = position.y + velocity.y
 
-   for position, velocity in zip(position, velocity) do
-      i = i + 1
-
-      if e[i] then
-         position.x = position.x + velocity.x
-         position.y = position.y + velocity.y
-
-         if position.x > 600 or position.y > 400 then
-            if math.random() < 0.4 then
-               e.del(i)
-            else
-               position.x = 0
-               position.y = 0
-            end
-         end
+   if position.x > 600 or position.y > 400 then
+      if math.random() < 0.4 then
+         e.delete(i)
+      else
+         position.x = 0
+         position.y = 0
       end
    end
+end
+
+s.other = {"other"}
+s.other.update = function(i, other)
+   other.testing = other.testing + 1
 end
 
 -- TEST ---------------------------------------------------------------------------------
@@ -38,7 +36,7 @@ function count(table)
    for _ in pairs(table) do
       i = i + 1
    end
-   return i - 1
+   return i
 end
 
 local N = 50000
@@ -56,8 +54,12 @@ time(
    "ALLOCATE",
    1,
    function()
+      math.randomseed(os.time())
       for _ = 1, N do
-         e.movable({x = 10, y = 10}, {x = math.random(10, 30), y = math.random(10, 30)})
+         e.movable {
+            position = {x = 10, y = 10},
+            velocity = {x = math.random(10, 30), y = math.random(10, 30)}
+         }
       end
    end
 )
@@ -66,9 +68,9 @@ time(
    "DESTROY",
    1,
    function()
-      for _ = 1, N do
-         if e[_] then
-            e.del(_)
+      for i = 1, N do
+         if e[i] then
+            e.delete(i)
          end
       end
    end
@@ -79,25 +81,35 @@ time(
    1,
    function()
       for _ = 1, N do
-         e.movable({x = 10, y = 10}, {x = math.random(10, 30), y = math.random(10, 30)})
+         e.movable {
+            position = {x = 10, y = 10},
+            velocity = {x = math.random(10, 30), y = math.random(10, 30)}
+         }
       end
    end
 )
 
 time(
-   "ITERATE",
+   "ITERATE PHYSICS",
    100,
    function()
       for i = 1, 100 do
-         s()
+         s(s.physics)
       end
    end
 )
+time(
+   "ITERATE OTHER",
+   100,
+   function()
+      for i = 1, 100 do
+         s(s.other)
+      end
+   end
+)
+
 print(
-   getmetatable(e).__reserve ..
-      " reserved " ..
-         getmetatable(e).__used ..
-            " used " ..
-               getmetatable(e).__used - count(getmetatable(e).__free) .. " active"
+   getmetatable(e).used ..
+      " allocated " .. getmetatable(e).used - count(getmetatable(e).free) .. " active"
 )
 print((collectgarbage("count") / 1024) .. "mb")

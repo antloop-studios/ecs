@@ -1,142 +1,172 @@
 --[[
    Author: Antloop
-   Author: evolbug
+   Author: evolbug (Daniels Kursits)
    MIT License, 2019
 --]]
 ---- MISC -------------------------------------------------------------------------------
--- zip 2 iterables together, used for easier component iteration
--- c1, c2, c3 in zip(c1, zip(c2, zip(c3)))
--- c1, c2 in zip(c1, c2)
-function zip(a, b)
-   local i = 0
-   if type(b) == "function" then
-      return function()
-         i = i + 1
-         return a[i], b()
-      end
-   else
-      return function()
-         i = i + 1
-         return a[i], b[i]
-      end
-   end
-end
 
--- create or extend an array with <count> items with <fields>
-local function allocate(count, fields, existing)
-   local t = existing or {}
-   for i = #t + 1, count do
-      t[i] = {}
-      for k, v in pairs(fields) do
-         t[i][k] = v
+-- build system cache keys
+local function make_keys(components, c)
+   local keys = {}
+   for c = c or 1, #components do
+      keys[#keys + 1] = components[c]
+      for _, k in ipairs(make_keys(components, c + 1)) do
+         keys[#keys + 1] = components[c] .. tostring(k)
       end
    end
-   return t
+   return keys
 end
 
 ---- INIT -------------------------------------------------------------------------------
 
 local entity = {}
+local emeta = {__index = {}, free = {}, used = 0}
+setmetatable(entity, emeta)
+
 local component = {}
+local cmeta = {__index = {}}
+setmetatable(component, cmeta)
+
 local system = {}
+local smeta = {bykey = {}}
+setmetatable(system, smeta)
 
 --- ENTITY ------------------------------------------------------------------------------
 
-local emeta = {
-   __reserve = 1,
-   __used = 0,
-   __free = {}
-}
-setmetatable(entity, emeta)
-
--- delete entity
--- e:del(index)
-function entity.del(index)
-   emeta.__free[index] = true
+-- delete an entity by id
+-- e.delete(id)
+function emeta.__index.delete(id)
+   rawset(entity, id, nil)
+   emeta.free[#emeta.free + 1] = id
+   for syskey, data in pairs(smeta.bykey) do
+      data.free[id] = true
+   end
 end
 
--- check if entity id exists
-function emeta:__index(index)
-   return not emeta.__free[index] and index <= emeta.__used and index > 0
-end
+-- new entity type
+-- e.name = components
+function emeta:__newindex(name, components)
+   -- create system keys if necessary
+   table.sort(components)
+   local syskeys = make_keys(components)
 
--- return free entity id
-function emeta:__call()
-   if next(emeta.__free) then
-      local slot = next(emeta.__free)
-      emeta.__free[slot] = false
-
-      return slot
-   elseif emeta.__used >= emeta.__reserve then
-      emeta.__reserve = emeta.__reserve * 2
-
-      for name, c in pairs(component) do
-         if name == "string" then
-            allocate(emeta.__reserve, component[name], component[component[name]])
-         end
+   for _, key in ipairs(syskeys) do
+      if not smeta.bykey[key] then
+         smeta.bykey[key] = {free = {}, etos = {}, used = 0}
       end
    end
 
-   emeta.__used = emeta.__used + 1
-   return emeta.__used
-end
+   -- do not overwrite reserved names
+   if emeta.__index[name] then
+      error("entity: name <" .. name .. "> is reserved", 2)
+   end
 
--- create new entity type
--- e.name = {components}
-function emeta:__newindex(name, components)
-   rawset(
-      self,
-      name,
-      setmetatable(
-         components,
-         {
-            __call = function(self, ...)
-               local data = {...}
-               local slot = entity()
-               for c = 1, #data do
-                  component[components[c]][slot] = data[c]
+   setmetatable(
+      components,
+      {
+         -- constructor
+         -- e.name{init}
+         __call = function(self, init)
+            -- print(dump(syskeys))
+            -- verify fields
+            for _, c in ipairs(self) do
+               for field in pairs(component[c]) do
+                  if not init[c][field] then
+                     error(
+                        "entity: field <" ..
+                           field ..
+                              "> required for <" ..
+                                 c .. "> to construct entity <" .. name .. ">",
+                        2
+                     )
+                  end
                end
             end
-         }
-      )
+
+            -- get free slot
+            local id = emeta.free[#emeta.free]
+            if id then
+               emeta.free[#emeta.free] = nil
+            else
+               emeta.used = emeta.used + 1
+            end
+            id = id or emeta.used
+            rawset(entity, id, true)
+
+            -- initialize components
+            for c = 1, #components do
+               cmeta.__index[components[c]][id] = init[components[c]]
+            end
+
+            -- cache entity id's in systems for better performance
+            for _, key in ipairs(syskeys) do
+               local system = smeta.bykey[key]
+               local sid = system.free[id]
+
+               if sid then
+                  system.free[id] = nil
+                  sid = system.etos[id]
+               else
+                  system.used = system.used + 1
+               end
+
+               system[sid or system.used] = id
+            end
+
+            return id
+         end
+      }
    )
+
+   rawset(self, name, components)
 end
 
 -- COMPONENT ----------------------------------------------------------------------------
 
-local cmeta = {}
-setmetatable(component, cmeta)
-
--- create component
--- c.name = {fields}
+-- create a component type
+-- c.name = fields
 function cmeta:__newindex(name, fields)
+   cmeta.__index[name] = {}
    rawset(self, name, fields)
-   rawset(self, fields, allocate(emeta.__reserve, fields))
 end
 
 --- SYSTEM ------------------------------------------------------------------------------
-
-local smeta = {}
-setmetatable(system, smeta)
-
 -- update all or specified systems
 -- s(...)
 function smeta:__call(...)
    local systems = {...}
    systems = #systems > 0 and systems or self
+
    for _, system in pairs(systems) do
       system()
    end
 end
 
--- create new system
--- s.name = {key}
-function smeta:__newindex(name, key)
-   -- cache direct component array access
-   local component_arrays = {}
-   for c = 1, #key do
-      component_arrays[c] = component[key[c]]
+function smeta:__newindex(name, components)
+   -- create system key
+   local syskey = {}
+   for _, c in ipairs(components) do
+      syskey[#syskey + 1] = c
    end
+   table.sort(syskey)
+   syskey = table.concat(syskey, "")
+   if not smeta.bykey[syskey] then
+      smeta.bykey[syskey] = {free = {}, used = 0}
+   end
+
+   -- verify component existence and build key
+   local datakey = "return function(id) return id"
+   for i = 1, #components do
+      if not component[components[i]] then
+         error(
+            "system: <" .. name .. "> declared with undefined component <" .. c .. ">",
+            2
+         )
+      end
+
+      datakey = datakey .. ", " .. components[i] .. "[id]"
+   end
+   datakey = setfenv(assert(loadstring(datakey .. " end"))(), cmeta.__index)
 
    rawset(
       self,
@@ -144,12 +174,27 @@ function smeta:__newindex(name, key)
       setmetatable(
          {},
          {
-            __index = key,
-            -- update subsystem
-            -- s.name()
+            -- create new subsystem
+            -- s.system.name = subsystem
+            __newindex = function(self, name, subsystem)
+               rawset(self, name, subsystem)
+               rawset(self, #self + 1, subsystem)
+            end,
+            -- update system
+            -- s.system()
             __call = function(self)
-               for name, subsystem in pairs(self) do
-                  subsystem(unpack(component_arrays))
+               local system = smeta.bykey[syskey]
+
+               for s = 1, #self do -- for each system
+                  local subsys = self[s]
+
+                  for e = 1, system.used do -- for each subsystem
+                     local id = system[e] -- get real id
+
+                     if not system.free[id] then -- if entity is active
+                        subsys(datakey(id))
+                     end
+                  end
                end
             end
          }
