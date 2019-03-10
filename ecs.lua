@@ -43,6 +43,22 @@ function emeta.__index.delete(id)
    end
 end
 
+-- get entity components by id
+-- components = e.get(id)
+function emeta.__index.get(id)
+   local e = {}
+   for i, c in pairs(component) do
+      e[i] = cmeta.__index[i][id]
+   end
+   return e
+end
+
+-- get allocated entity count
+-- len = e.len()
+function emeta.__index.len()
+   return emeta.used
+end
+
 -- new entity type
 -- e.name = components
 function emeta:__newindex(name, components)
@@ -51,7 +67,7 @@ function emeta:__newindex(name, components)
    local syskeys = make_keys(components)
 
    for _, key in ipairs(syskeys) do
-      if not smeta.bykey[key] then
+      if smeta.bykey[key] == nil then
          smeta.bykey[key] = {free = {}, etos = {}, used = 0}
       end
    end
@@ -67,18 +83,22 @@ function emeta:__newindex(name, components)
          -- constructor
          -- e.name{init}
          __call = function(self, init)
-            -- print(dump(syskeys))
             -- verify fields
+            for c, _ in pairs(init) do
+               if type(_) ~= "table" then
+                  error("entity: <" .. name .. "> component <" .. c .. "> must be a table", 2)
+               end
+               if component[c] == nil then
+                  error("entity: <" .. name .. "> component <" .. c .. "> is not defined", 2)
+               end
+            end
             for _, c in ipairs(self) do
-               for field in pairs(component[c]) do
-                  if not init[c][field] then
-                     error(
-                        "entity: field <" ..
-                           field ..
-                              "> required for <" ..
-                                 c .. "> to construct entity <" .. name .. ">",
-                        2
-                     )
+               if init[c] == nil then
+                  error("entity: <" .. name .. "> requires component <" .. c .. ">", 2)
+               end
+               for f in pairs(component[c]) do
+                  if init[c][f] == nil then
+                     error("entity: <" .. name .. "> component <" .. c .. "> requires field <" .. f .. ">", 2)
                   end
                end
             end
@@ -127,6 +147,11 @@ end
 -- c.name = fields
 function cmeta:__newindex(name, fields)
    cmeta.__index[name] = {}
+
+   if type(fields) ~= "table" then
+      error("component: <" .. name .. "> must be a table", 2)
+   end
+
    rawset(self, name, fields)
 end
 
@@ -150,18 +175,15 @@ function smeta:__newindex(name, components)
    end
    table.sort(syskey)
    syskey = table.concat(syskey, "")
-   if not smeta.bykey[syskey] then
+   if smeta.bykey[syskey] == nil then
       smeta.bykey[syskey] = {free = {}, used = 0}
    end
 
    -- verify component existence and build key
    local datakey = "return function(id) return id"
    for i = 1, #components do
-      if not component[components[i]] then
-         error(
-            "system: <" .. name .. "> declared with undefined component <" .. c .. ">",
-            2
-         )
+      if component[components[i]] == nil then
+         error("system: <" .. name .. "> component <" .. components[i] .. "> is not defined", 2)
       end
 
       datakey = datakey .. ", " .. components[i] .. "[id]"
@@ -191,7 +213,7 @@ function smeta:__newindex(name, components)
                   for e = 1, system.used do -- for each subsystem
                      local id = system[e] -- get real id
 
-                     if not system.free[id] then -- if entity is active
+                     if system.free[id] == nil then -- if entity is active
                         subsys(datakey(id))
                      end
                   end
